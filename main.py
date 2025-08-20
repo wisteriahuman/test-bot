@@ -6,18 +6,10 @@ import asyncio
 import hashlib
 import pathlib
 from bs4 import BeautifulSoup
+import html
+import re
 
-
-def _find_important_panel(soup: BeautifulSoup):
-    """'重要な告知' をタイトルに含む panel を探す（class順や差異に強い）。"""
-    # まず h3.panel-title を持つ panel を探す
-    for div in soup.find_all("div"):
-        # check headings inside
-        h3 = div.find(lambda tag: tag.name in ("h1", "h2", "h3") and tag.get_text())
-        if h3 and "重要な告知" in h3.get_text():
-            return div
-    # フォールバック: class ベースの探索
-    return soup.find("div", class_="panel panel-info")
+from markdownify import markdownify as md
 
 
 def _find_contest_panel(soup: BeautifulSoup):
@@ -68,6 +60,10 @@ SEND_LATEST_ON_STARTUP = os.getenv("SEND_LATEST_ON_STARTUP", "false").lower() in
 
 @client.event
 async def on_ready():
+    if getattr(client, "_atcoder_tasks_started", False):
+        return
+    client._atcoder_tasks_started = True
+
     print(f"{client.user.name}がログインしました")
     print(f"Bot ID: {client.user.id}")
     print("------")
@@ -90,12 +86,12 @@ async def send_saved_post_on_startup():
                 if resp.status != 200:
                     print("起動時 /home 取得失敗 status=", resp.status)
                     return
-                html = await resp.text()
+                html_text = await resp.text()
         except Exception as e:
             print("起動時 /home 取得エラー:", e)
             return
 
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(html_text, "html.parser")
     panel = _find_contest_panel(soup)
     if not panel:
         print("起動時: 直近のコンテストの告知パネルが見つかりませんでした")
@@ -173,7 +169,12 @@ async def send_saved_post_on_startup():
     if not body:
         # フォールバックで最初の .panel-body を探す
         body = psoup.find("div", class_="panel-body")
-    text = body.get_text(separator="\n", strip=True) if body else ""
+    body_html = html.unescape(str(body)) if body else ""
+    text = md(body_html, strip=["span", "time", "div"]) if body_html else ""
+    pat_img = r"!\[[^\]]*\]\([^)]*\)\s*"
+    text = re.sub(pat_img, "", text)
+    pat_user = r"\((/users/[^)]*)\)"
+    text = re.sub(pat_user, r"(https://atcoder.jp\1)", text)
 
     channel = client.get_channel(int(TARGET_CHANNEL_ID))
     if channel is None:
@@ -272,8 +273,26 @@ async def check_atcoder_loop():
                                                     "div", class_="panel-body"
                                                 )
                                             if body:
-                                                post_text = body.get_text(
-                                                    separator="\n", strip=True
+                                                body_html = (
+                                                    html.unescape(str(body))
+                                                    if body
+                                                    else ""
+                                                )
+                                                text = (
+                                                    md(
+                                                        body_html,
+                                                        strip=["span", "time", "div"],
+                                                    )
+                                                    if body_html
+                                                    else ""
+                                                )
+                                                pat_img = r"!\[[^\]]*\]\([^)]*\)\s*"
+                                                text = re.sub(pat_img, "", text)
+                                                pat_user = r"\((/users/[^)]*)\)"
+                                                post_text = re.sub(
+                                                    pat_user,
+                                                    r"(https://atcoder.jp\1)",
+                                                    text,
                                                 )
                                             # コンテストリンクの存在確認
                                             ca = psoup.find(
@@ -364,15 +383,140 @@ async def check_atcoder_loop():
                 print("AtCoderチェックエラー:", e)
             await asyncio.sleep(POLL_INTERVAL)
 
+async def send_latest_announcements(channel):
+    """起動時テスト送信: 常に /home を取得して「直近のコンテストの告知」パネルの最新投稿を送信する。"""
+    if not TARGET_CHANNEL_ID:
+        print("SEND_LATEST_ON_STARTUP が有効ですが TARGET_CHANNEL_ID が未設定です")
+        return
+
+    timeout = aiohttp.ClientTimeout(total=30)
+    headers = {"User-Agent": "AtCoderWatchBot/1.0 (+https://example.local/)"}
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+        try:
+            async with session.get(ATCODER_URL) as resp:
+                if resp.status != 200:
+                    print("起動時 /home 取得失敗 status=", resp.status)
+                    return
+                html_text = await resp.text()
+        except Exception as e:
+            print("起動時 /home 取得エラー:", e)
+            return
+
+    soup = BeautifulSoup(html_text, "html.parser")
+    panel = _find_contest_panel(soup)
+    if not panel:
+        print("起動時: 直近のコンテストの告知パネルが見つかりませんでした")
+        return
+
+    # パネル内のポストリンクを探す（/posts/）。ただし通知はその投稿ページ内に
+    # /contests/ リンクが含まれる場合のみ行う（コンテスト告知のみを厳格化）。
+    a = panel.find("a", href=lambda h: h and h.startswith("/posts/"))
+    if not a:
+        print("起動時: パネル内に投稿リンクが見つかりませんでした")
+        return
+
+    href = a["href"]
+    post_url = f"https://atcoder.jp{href}"
+    latest_post_id = href.rstrip("/").split("/")[-1]
+    latest_title = a.get_text(strip=True)
+
+    # 投稿ページを取得して、その中に /contests/ リンクが含まれるか確認する
+    is_contest_post = False
+    timeout = aiohttp.ClientTimeout(total=30)
+    headers = {"User-Agent": "AtCoderWatchBot/1.0 (+https://example.local/)"}
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session2:
+        try:
+            async with session2.get(post_url) as resp:
+                if resp.status == 200:
+                    post_html = await resp.text()
+                    psoup = BeautifulSoup(post_html, "html.parser")
+                    ca = psoup.find(
+                        "a",
+                        href=lambda h: h
+                        and (
+                            h.startswith("/contests/")
+                            or (h.startswith("https://atcoder.jp/contests/"))
+                        ),
+                    )
+                    if ca:
+                        is_contest_post = True
+                else:
+                    print("起動時の投稿取得失敗 status=", resp.status)
+        except Exception as e:
+            print("起動時の投稿取得エラー:", e)
+
+    if not is_contest_post:
+        print("起動時: この投稿はコンテスト告知ではありません（/contests/ リンクなし）")
+        # それでも最新ポストIDは保存して、繰り返し評価されないようにする
+        try:
+            LAST_HASH_FILE.write_text(f"contest:{latest_post_id}")
+        except Exception:
+            pass
+        return
+
+    # 個別ページを取得して本文を送信
+    timeout = aiohttp.ClientTimeout(total=30)
+    headers = {"User-Agent": "AtCoderWatchBot/1.0 (+https://example.local/)"}
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+        try:
+            async with session.get(post_url) as resp:
+                if resp.status != 200:
+                    print("起動時の投稿取得失敗 status=", resp.status)
+                    return
+                post_html = await resp.text()
+        except Exception as e:
+            print("起動時の投稿取得エラー:", e)
+            return
+
+    psoup = BeautifulSoup(post_html, "html.parser")
+    # 投稿本文は panel-body.blog-post を期待するが、なければ body のテキスト全体を取得
+    body = psoup.find("div", class_="panel-body blog-post")
+    if not body:
+        # フォールバックで最初の .panel-body を探す
+        body = psoup.find("div", class_="panel-body")
+    body_html = html.unescape(str(body)) if body else ""
+    text = md(body_html, strip=["span", "time", "div"]) if body_html else ""
+    pat_img = r"!\[[^\]]*\]\([^)]*\)\s*"
+    text = re.sub(pat_img, "", text)
+    pat_user = r"\((/users/[^)]*)\)"
+    text = re.sub(pat_user, r"(https://atcoder.jp\1)", text)
+
+    channel = client.get_channel(int(TARGET_CHANNEL_ID))
+    if channel is None:
+        try:
+            channel = await client.fetch_channel(int(TARGET_CHANNEL_ID))
+        except Exception:
+            channel = None
+
+    if not channel:
+        print("指定チャンネルが見つかりません:", TARGET_CHANNEL_ID)
+        return
+
+    if text:
+        desc = text if len(text) <= 1900 else text[:1900] + "…"
+        embed = discord.Embed(
+            title=f"直近のコンテスト告知: {latest_title}",
+            url=post_url,
+            description=desc,
+        )
+        await channel.send(
+            content="直近のコンテスト告知を送信します", embed=embed
+        )
+    else:
+        await channel.send(
+            f"直近のコンテスト告知: {post_url} (本文が取得できませんでした)"
+        )
 
 @client.event
 async def on_message(message):
     if message.author == client.user:
         return
 
-    if message.content == "!hello":
+    if message.content == "!一号!Hello":
         await message.channel.send("Hello!")
-
+        
+    if message.content == "!一号!最新のコンテストは？":
+        await send_latest_announcements(message.channel)
 
 TOKEN = os.getenv("TOKEN")
 client.run(TOKEN)
