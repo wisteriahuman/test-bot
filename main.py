@@ -57,6 +57,11 @@ SEND_LATEST_ON_STARTUP = os.getenv("SEND_LATEST_ON_STARTUP", "false").lower() in
     "yes",
 )
 CONTESTS_URL = os.getenv("CONTESTS_URL", "https://atcoder.jp/contests/?lang=ja")
+# 即時反映用（任意）：開発用ギルドIDを指定するとギルド単位で同期して即時反映
+GUILD_ID = os.getenv("GUILD_ID")
+GUILD_OBJ = (
+    discord.Object(id=int(GUILD_ID)) if GUILD_ID and GUILD_ID.isdigit() else None
+)
 
 SERIES_ALIASES = {
     "ABC": "abc",
@@ -76,8 +81,13 @@ ALLOWED_CHANNEL_IDS = {
 @client.event
 async def on_ready():
     try:
-        await client.tree.sync()
-        print("Slash commands synced (global)")
+        if GUILD_OBJ:
+            client.tree.copy_global_to(guild=GUILD_OBJ)
+            await client.tree.sync(guild=GUILD_OBJ)
+            print(f"Slash commands synced for guild {GUILD_ID}")
+        else:
+            await client.tree.sync()
+            print("Slash commands synced (global)")
     except Exception as e:
         print("Slash command sync failed:", e)
 
@@ -93,7 +103,7 @@ async def on_ready():
     client.loop.create_task(check_atcoder_loop())
 
 
-@client.tree.command(name="latest_contest", description="直近のコンテストを告知します")
+@client.tree.command(name="recent_contest", description="直近のコンテストを告知します")
 async def slash_latest_contest(interaction: discord.Interaction):
 
     if ALLOWED_CHANNEL_IDS:
@@ -112,7 +122,7 @@ async def slash_latest_contest(interaction: discord.Interaction):
 
 
 @client.tree.command(
-    name="latest_series", description="直近のシリーズ告知を送ります（abc/arc/agc/ahc）"
+    name="recent_series", description="直近のシリーズ告知を送ります（abc/arc/agc/ahc）"
 )
 @app_commands.describe(series="abc / arc / agc / ahc のいずれか")
 async def slash_latest_series(interaction: discord.Interaction, series: str):
@@ -140,6 +150,22 @@ async def slash_latest_series(interaction: discord.Interaction, series: str):
     )
 
 
+# @client.tree.command(name="ping", description="pingを返します")
+# async def slash_ping(interaction: discord.Interaction):
+#     # 監視チャンネル制限
+#     if ALLOWED_CHANNEL_IDS:
+#         ch_id = getattr(interaction.channel, "id", None)
+#         parent_id = getattr(interaction.channel, "parent_id", None)
+#         if (ch_id not in ALLOWED_CHANNEL_IDS) and (
+#             parent_id not in ALLOWED_CHANNEL_IDS
+#         ):
+#             await interaction.response.send_message(
+#                 "このチャンネルでは使用できません。", ephemeral=True
+#             )
+#             return
+#     await interaction.response.send_message("pong", ephemeral=True)
+
+
 async def send_saved_post_on_startup():
     """起動時テスト送信: 常に /home を取得して「直近のコンテストの告知」パネルの最新投稿を送信する。"""
     if not TARGET_CHANNEL_ID:
@@ -164,7 +190,6 @@ async def send_saved_post_on_startup():
     if not panel:
         print("起動時: 直近のコンテストの告知パネルが見つかりませんでした")
         return
-
 
     a = panel.find("a", href=lambda h: h and h.startswith("/posts/"))
     if not a:
@@ -371,7 +396,7 @@ async def check_atcoder_loop():
                                     )
                                 else:
                                     if post_text:
-                                        
+
                                         desc = post_text
                                         if len(desc) > 1900:
                                             desc = desc[:1900] + "…"
@@ -394,7 +419,6 @@ async def check_atcoder_loop():
                                 "TARGET_CHANNEL_ID が設定されていません。更新を検知:",
                                 latest_url,
                             )
-
 
                     LAST_HASH_FILE.write_text(f"contest:{latest_id}")
                 else:
@@ -454,7 +478,6 @@ async def send_latest_announcements(channel):
         await channel.send("『直近のコンテストの告知』パネルが見つかりませんでした。")
         return
 
-
     a = panel.find("a", href=lambda h: h and h.startswith("/posts/"))
     if not a:
         await channel.send("パネル内に投稿リンクが見つかりませんでした。")
@@ -464,7 +487,6 @@ async def send_latest_announcements(channel):
     post_url = f"https://atcoder.jp{href}"
     latest_post_id = href.rstrip("/").split("/")[-1]
     latest_title = a.get_text(strip=True)
-
 
     is_contest_post = False
     timeout = aiohttp.ClientTimeout(total=30)
@@ -503,7 +525,6 @@ async def send_latest_announcements(channel):
             pass
         return
 
-
     timeout = aiohttp.ClientTimeout(total=30)
     headers = {"User-Agent": "AtCoderWatchBot/1.0 (+https://example.local/)"}
     async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
@@ -520,7 +541,7 @@ async def send_latest_announcements(channel):
             return
 
     psoup = BeautifulSoup(post_html, "html.parser")
-    
+
     body = psoup.select_one("div.panel-body.blog-post") or psoup.select_one(
         "div.panel-body"
     )
@@ -556,7 +577,7 @@ async def _fetch_latest_series_announcement(
     本文HTMLをmd変換して返す。
     戻り値: dict(title, post_url, text) または None
     """
-    
+
     async with session.get(ATCODER_URL) as resp:
         if resp.status != 200:
             return None
@@ -564,11 +585,11 @@ async def _fetch_latest_series_announcement(
 
     soup = BeautifulSoup(html_text, "html.parser")
     panel = _find_contest_panel(soup)
-    
+
     links = []
     if panel:
         links = panel.find_all("a", href=lambda h: h and h.startswith("/posts/"))
-        
+
     if not links:
         links = soup.find_all("a", href=lambda h: h and h.startswith("/posts/"))
 
@@ -583,7 +604,7 @@ async def _fetch_latest_series_announcement(
 
     if not post_hrefs:
         return None
-    
+
     for title, post_url in post_hrefs[:40]:
         try:
             async with session.get(post_url) as pr:
@@ -654,47 +675,11 @@ async def send_series_announcement(series_prefix: str, channel):
 
 @client.event
 async def on_message(message):
-    if message.author == client.user:
-        return
-    if ALLOWED_CHANNEL_IDS:
-        ch_id = getattr(message.channel, "id", None)
-        parent_id = getattr(message.channel, "parent_id", None)
-        if (ch_id not in ALLOWED_CHANNEL_IDS) and (
-            parent_id not in ALLOWED_CHANNEL_IDS
-        ):
-            return
-
-    if message.content == "!<直近のコンテストは？>":
-        await send_latest_announcements(message.channel)
-
-    m = re.fullmatch(
-        r"!<直近の(ABC|ARC|AGC|AHC)は[?？]>",
-        message.content.strip(),
-        flags=re.IGNORECASE,
-    )
-    if m:
-        key = m.group(1).upper()
-        series = SERIES_ALIASES.get(key)
-        await send_series_announcement(series, message.channel)
-        return
-    await client.process_commands(message)
+    # スラッシュ専用運用。テキストメッセージは処理しない
+    return
 
 
-@client.command(name="latest_contest", help="直近のコンテストを告知します")
-async def cmd_latest_contest(ctx):
-    await send_latest_announcements(ctx.channel)
-
-
-@client.command(
-    name="latest_series", help="直近のシリーズ告知を送ります（abc/arc/agc/ahc）"
-)
-async def cmd_latest_series(ctx, series: str):
-    key = series.upper()
-    sp = SERIES_ALIASES.get(key)
-    if not sp:
-        await ctx.reply("シリーズは abc/arc/agc/ahc から指定してください。")
-        return
-    await send_series_announcement(sp, ctx.channel)
+# プレフィックスコマンドは廃止（スラッシュコマンドのみ）
 
 
 TOKEN = os.getenv("TOKEN")
