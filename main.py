@@ -103,26 +103,26 @@ async def on_ready():
     client.loop.create_task(check_atcoder_loop())
 
 
-@client.tree.command(name="recent_contest", description="直近のコンテストを告知します")
-async def slash_latest_contest(interaction: discord.Interaction):
+# @client.tree.command(name="recent_contest", description="直近のコンテストを告知します")
+# async def slash_latest_contest(interaction: discord.Interaction):
 
-    if ALLOWED_CHANNEL_IDS:
-        ch_id = getattr(interaction.channel, "id", None)
-        parent_id = getattr(interaction.channel, "parent_id", None)
-        if (ch_id not in ALLOWED_CHANNEL_IDS) and (
-            parent_id not in ALLOWED_CHANNEL_IDS
-        ):
-            await interaction.response.send_message(
-                "このチャンネルでは使用できません。", ephemeral=True
-            )
-            return
-    await interaction.response.defer(thinking=True)
-    await send_latest_announcements(interaction.channel)
-    await interaction.followup.send("送信しました。", ephemeral=True)
+#     if ALLOWED_CHANNEL_IDS:
+#         ch_id = getattr(interaction.channel, "id", None)
+#         parent_id = getattr(interaction.channel, "parent_id", None)
+#         if (ch_id not in ALLOWED_CHANNEL_IDS) and (
+#             parent_id not in ALLOWED_CHANNEL_IDS
+#         ):
+#             await interaction.response.send_message(
+#                 "このチャンネルでは使用できません。", ephemeral=True
+#             )
+#             return
+#     await interaction.response.defer(thinking=True)
+#     await send_latest_announcements(interaction.channel)
+#     await interaction.followup.send("送信しました。", ephemeral=True)
 
 
 @client.tree.command(
-    name="recent_series", description="直近のシリーズ告知を送ります（abc/arc/agc/ahc）"
+    name="contest-info", description="直近のコンテスト告知を送ります（abc/arc/agc/ahc）"
 )
 @app_commands.describe(series="abc / arc / agc / ahc のいずれか")
 async def slash_latest_series(interaction: discord.Interaction, series: str):
