@@ -70,6 +70,25 @@ SERIES_ALIASES = {
     "AHC": "ahc",
 }
 
+ABC_ROLE_ID = os.getenv("ABC_ROLE_ID")
+
+
+def _extract_contest_slug(url: str) -> str:
+    """contest URL からスラッグ (abc420 等) を抽出"""
+    if not url:
+        return ""
+    m = re.search(r"/contests/([a-zA-Z0-9_\-]+)/?", url)
+    return m.group(1).lower() if m else ""
+
+
+def _role_mention_for_contest(url: str) -> str:
+    """コンテストURLからシリーズを判定し、該当すればロールメンション文字列を返す"""
+    slug = _extract_contest_slug(url)
+    if slug.startswith("abc") and ABC_ROLE_ID and ABC_ROLE_ID.isdigit():
+        return f"<@&{ABC_ROLE_ID}> "
+    return ""
+
+
 _ALLOWED_CHANNEL_IDS_ENV = os.getenv("ALLOWED_CHANNEL_IDS", "").strip()
 ALLOWED_CHANNEL_IDS = {
     int(x)
@@ -405,12 +424,44 @@ async def check_atcoder_loop():
                                             url=latest_url,
                                             description=desc,
                                         )
+                                        # 追加: コンテストURLからシリーズ判定してロールメンション
+                                        contest_link = None
+                                        if ca:
+                                            href2 = ca.get("href")
+                                            if href2:
+                                                contest_link = (
+                                                    href2
+                                                    if href2.startswith("http")
+                                                    else f"https://atcoder.jp{href2}"
+                                                )
+                                        role_prefix = _role_mention_for_contest(
+                                            contest_link or latest_url
+                                        )
                                         await channel.send(
-                                            content="【AtCoder 告知】", embed=embed
+                                            content=f"{role_prefix}【AtCoder 告知】",
+                                            embed=embed,
+                                            allowed_mentions=discord.AllowedMentions(
+                                                roles=True
+                                            ),
                                         )
                                     else:
+                                        contest_link = None
+                                        if ca:
+                                            href2 = ca.get("href")
+                                            if href2:
+                                                contest_link = (
+                                                    href2
+                                                    if href2.startswith("http")
+                                                    else f"https://atcoder.jp{href2}"
+                                                )
+                                        role_prefix = _role_mention_for_contest(
+                                            contest_link or latest_url
+                                        )
                                         await channel.send(
-                                            f"【AtCoder 告知】{latest_title}\n{latest_url}"
+                                            content=f"{role_prefix}【AtCoder 告知】{latest_title}\n{latest_url}",
+                                            allowed_mentions=discord.AllowedMentions(
+                                                roles=True
+                                            ),
                                         )
                             else:
                                 print("チャネルが見つかりません:", TARGET_CHANNEL_ID)
