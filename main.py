@@ -81,11 +81,37 @@ def _extract_contest_slug(url: str) -> str:
     return m.group(1).lower() if m else ""
 
 
+def _abs_url(href: str) -> str:
+    return href if href.startswith("http") else f"https://atcoder.jp{href}"
+
+
+def _find_contest_url(node: BeautifulSoup) -> str | None:
+    """
+    指定ノード内から /contests/{slug} のURLを抽出して返す（ルート /contests/ は除外）。
+    まず <a> の href を走査、なければプレーンテキストのURLを検索。
+    """
+    # 1) aタグのhrefを優先（出現順）
+    for a in node.find_all("a", href=True):
+        h = a["href"]
+        m = re.search(r"/contests/([A-Za-z0-9_\-]+)/?", h)
+        if m:
+            return _abs_url(h)
+    # 2) プレーンテキストから抽出
+    text = node.get_text(" ", strip=True)
+    m2 = re.search(r"https?://atcoder\.jp/contests/([A-Za-z0-9_\-]+)/?", text)
+    if m2:
+        return m2.group(0)
+    return None
+
+
 def _role_mention_for_contest(url: str) -> str:
     """コンテストURLからシリーズを判定し、該当すればロールメンション文字列を返す"""
     slug = _extract_contest_slug(url)
+    print(url)
     if slug.startswith("abc") and ABC_ROLE_ID and ABC_ROLE_ID.isdigit():
+        print("abc match")
         return f"<@&{ABC_ROLE_ID}> "
+    print(slug.startswith("abc"), ABC_ROLE_ID, ABC_ROLE_ID and ABC_ROLE_ID.isdigit())
     return ""
 
 
@@ -386,20 +412,11 @@ async def check_atcoder_loop():
                                                     r"(https://atcoder.jp\1)",
                                                     text,
                                                 )
-                                            ca = psoup.find(
-                                                "a",
-                                                href=lambda h: h
-                                                and (
-                                                    h.startswith("/contests/")
-                                                    or (
-                                                        h.startswith(
-                                                            "https://atcoder.jp/contests/"
-                                                        )
-                                                    )
-                                                ),
+                                            # 本文から /contests/{slug} のURLを抽出（ルート /contests/ は除外）
+                                            contest_url = _find_contest_url(
+                                                body or psoup
                                             )
-                                            if ca:
-                                                is_contest_post = True
+                                            is_contest_post = contest_url is not None
                                         else:
                                             print(
                                                 "投稿ページ取得失敗 status=",
@@ -424,18 +441,9 @@ async def check_atcoder_loop():
                                             url=latest_url,
                                             description=desc,
                                         )
-                                        # 追加: コンテストURLからシリーズ判定してロールメンション
-                                        contest_link = None
-                                        if ca:
-                                            href2 = ca.get("href")
-                                            if href2:
-                                                contest_link = (
-                                                    href2
-                                                    if href2.startswith("http")
-                                                    else f"https://atcoder.jp{href2}"
-                                                )
+                                        # 抽出した contest_url でシリーズ判定してロールメンション
                                         role_prefix = _role_mention_for_contest(
-                                            contest_link or latest_url
+                                            contest_url or ""
                                         )
                                         await channel.send(
                                             content=f"{role_prefix}【AtCoder 告知】",
@@ -445,17 +453,8 @@ async def check_atcoder_loop():
                                             ),
                                         )
                                     else:
-                                        contest_link = None
-                                        if ca:
-                                            href2 = ca.get("href")
-                                            if href2:
-                                                contest_link = (
-                                                    href2
-                                                    if href2.startswith("http")
-                                                    else f"https://atcoder.jp{href2}"
-                                                )
                                         role_prefix = _role_mention_for_contest(
-                                            contest_link or latest_url
+                                            contest_url or ""
                                         )
                                         await channel.send(
                                             content=f"{role_prefix}【AtCoder 告知】{latest_title}\n{latest_url}",
